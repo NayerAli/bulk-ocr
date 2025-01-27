@@ -2,6 +2,8 @@ import type { ProcessingJob, ProcessingStatus } from "../types"
 import { ProcessingError } from "../types"
 import { useStore } from "../stores/store"
 import { serviceManager } from "./service-manager"
+import { processImage } from "../actions/ocr-actions"
+import { processImageForOCR } from "@/lib/utils/image-processing"
 
 const CHUNK_SIZE = 10 // Process 10 pages at a time
 const CONCURRENT_CHUNKS = 3 // Process 3 chunks concurrently
@@ -11,9 +13,7 @@ export class ProcessingWorker {
   private processing = false
 
   constructor() {
-    // Initialize OCR service if not already initialized
-    const store = useStore.getState()
-    store.initializeOCRService()
+    // No initialization in constructor to avoid circular dependency
   }
 
   addJob(job: ProcessingJob) {
@@ -124,29 +124,32 @@ export class ProcessingWorker {
   }
 
   private async processChunk(job: ProcessingJob, pageNumbers: number[]) {
-    const ocrService = serviceManager.getOCRService()
+    const store = useStore.getState()
+    const settings = store.settings
 
-    // In a real implementation, this would:
-    // 1. Load the specific pages from the PDF
-    // 2. Convert them to images
-    // 3. Process with OCR service
-    // 4. Save the results
+    if (!job.file) {
+      throw new Error('No file available for processing')
+    }
 
+    // Process each page in the chunk
     const results = await Promise.all(
       pageNumbers.map(async (pageNumber) => {
-        // Simulate processing time
-        await new Promise((resolve) => setTimeout(resolve, Math.random() * 1000 + 500))
+        // Process the image
+        const processedData = await processImageForOCR(job.file!)
 
-        const result = await ocrService.processImage("base64_image_data")
-
-        if (!result.success) {
-          throw new Error(`Failed to process page ${pageNumber}`)
+        // Use the server action for OCR processing
+        const result = await processImage(processedData, settings)
+        
+        // Handle success case with metadata
+        if (result.success && 'metadata' in result && result.text) {
+          return {
+            pageNumber,
+            text: result.text,
+          }
         }
-
-        return {
-          pageNumber,
-          text: result.text,
-        }
+        
+        // Handle error case
+        throw new Error(`Failed to process page ${pageNumber}: ${result.error || 'No text generated'}`)
       }),
     )
 

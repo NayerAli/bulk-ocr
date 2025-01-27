@@ -20,26 +20,29 @@ function extractBase64FromDataUrl(dataUrl: string): { base64Data: string; mimeTy
   }
 }
 
-export async function processWithClaude(imageData: string, settings: OCRSettings): Promise<OCRResult> {
+export async function processWithOpenAI(imageData: string, settings: OCRSettings): Promise<OCRResult> {
   try {
     if (typeof window !== "undefined") {
-      throw new ProcessingError("Claude OCR can only be used server-side")
+      throw new ProcessingError("OpenAI OCR can only be used server-side")
     }
 
     // Extract base64 data and mime type from data URL
     const { base64Data, mimeType } = extractBase64FromDataUrl(imageData)
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": settings.apiKeys.claude!,
-        "anthropic-version": "2023-06-01"
+        "Authorization": `Bearer ${settings.apiKeys.openai}`
       },
       body: JSON.stringify({
         model: settings.model,
         max_tokens: settings.isTestMode ? 100 : 4096,
         messages: [
+          {
+            role: "system",
+            content: "You are a specialized OCR system for extracting text from images and PDFs, with particular expertise in Arabic and Persian scripts."
+          },
           {
             role: "user",
             content: [
@@ -48,29 +51,26 @@ export async function processWithClaude(imageData: string, settings: OCRSettings
                 text: `Extract text from this ${settings.language} document. ${settings.isTestMode ? 'This is a test run - please only process a small sample of the text.' : 'Maintain all formatting, line breaks, and paragraph structures.'} Only return the extracted text, no explanations or metadata.`
               },
               {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: mimeType,
-                  data: base64Data
+                type: "image_url",
+                image_url: {
+                  url: `data:${mimeType};base64,${base64Data}`
                 }
               }
             ]
           }
-        ],
-        system: "You are a specialized OCR system for extracting text from images and PDFs, with particular expertise in Arabic and Persian scripts."
+        ]
       })
     })
 
     if (!response.ok) {
       const error = await response.json()
-      throw new ProcessingError(error.error?.message || "Claude API request failed")
+      throw new ProcessingError(error.error?.message || "OpenAI API request failed")
     }
 
     const result = await response.json()
-    const text = result.content?.[0]?.text
+    const text = result.choices?.[0]?.message?.content
     if (!text) {
-      throw new ProcessingError("No text generated from Claude")
+      throw new ProcessingError("No text generated from OpenAI")
     }
 
     return { 
@@ -84,5 +84,4 @@ export async function processWithClaude(imageData: string, settings: OCRSettings
       error: processedError.message
     }
   }
-}
-
+} 

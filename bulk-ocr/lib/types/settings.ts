@@ -2,11 +2,12 @@ export type OCRProvider = "claude" | "openai"
 
 export interface OCRSettings {
   provider: OCRProvider
+  model?: string
   apiKeys: {
     claude?: string
     openai?: string
   }
-  language: "arabic" | "persian"
+  language: string
   confidence: number
   retryAttempts: number
   retryDelay: number

@@ -3,21 +3,35 @@ export type FileType = "pdf" | "image"
 
 export type ProcessingStatus = "queued" | "analyzing" | "converting" | "processing" | "completed" | "failed"
 
+export interface ProcessingMetadata {
+  mimeType: string
+  sizeInBytes: number
+  timestamp: number
+  width?: number
+  height?: number
+  dpi?: number
+  orientation?: number
+}
+
 // OCR related types
 export interface OCRSettings {
   provider: "claude" | "openai"
+  model: string
+  language: string
+  retryAttempts: number
+  retryDelay: number
+  confidence: number
+  isTestMode?: boolean
   apiKeys: {
     claude?: string
     openai?: string
   }
-  language: string
-  retryAttempts: number
-  retryDelay: number
 }
 
 // Processing related types
 export interface ProcessingJob {
   id: string
+  file?: File
   fileName: string
   fileType: FileType
   fileSize: number
@@ -26,6 +40,8 @@ export interface ProcessingJob {
   status: ProcessingStatus
   progress: number
   error?: string
+  result?: string
+  metadata?: ProcessingMetadata
   createdAt: Date
   startedAt?: Date
   completedAt?: Date
@@ -33,6 +49,7 @@ export interface ProcessingJob {
     stage: string
     message: string
     timestamp: Date
+    confidence?: number
   }[]
 }
 
