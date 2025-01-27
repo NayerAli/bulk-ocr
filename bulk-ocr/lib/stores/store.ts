@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { AppSettings, ProcessingJob, SystemMetrics } from "@/lib/types"
-import { ProcessingWorker } from "@/lib/services/processing-worker"
+import type { AppSettings, ProcessingJob, SystemMetrics } from "../types"
+import { serviceManager } from "../services/service-manager"
 
 interface Store {
   // Settings
@@ -11,12 +11,14 @@ interface Store {
   updateAPIKey: (provider: "claude" | "openai", apiKey: string) => void
 
   // Processing
-  worker: ProcessingWorker
   jobs: ProcessingJob[]
   activeJobs: number
   addJob: (job: ProcessingJob) => void
   updateJob: (jobId: string, updates: Partial<ProcessingJob>) => void
   removeJob: (jobId: string) => void
+
+  // OCR Service
+  initializeOCRService: () => void
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -24,7 +26,6 @@ const DEFAULT_SETTINGS: AppSettings = {
     provider: "claude",
     apiKeys: {},
     language: "arabic",
-    confidence: 0.8,
     retryAttempts: 3,
     retryDelay: 1000,
   },
@@ -36,7 +37,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     retryDelay: 1000,
   },
   upload: {
-    maxFileSize: 500 * 1024 * 1024,
+    maxFileSize: 500 * 1024 * 1024, // 500MB
     allowedFileTypes: [".pdf", ".jpg", ".jpeg", ".png"],
     maxSimultaneousUploads: 5,
   },
@@ -86,16 +87,13 @@ export const useStore = create<Store>()(
         })),
 
       // Processing
-      worker: new ProcessingWorker(),
       jobs: [],
       activeJobs: 0,
-      addJob: (job) => {
+      addJob: (job) =>
         set((state) => ({
           jobs: [...state.jobs, job],
           activeJobs: state.activeJobs + 1,
-        }))
-        get().worker.addJob(job)
-      },
+        })),
       updateJob: (jobId, updates) =>
         set((state) => ({
           jobs: state.jobs.map((job) => (job.id === jobId ? { ...job, ...updates } : job)),
@@ -107,6 +105,14 @@ export const useStore = create<Store>()(
           jobs: state.jobs.filter((job) => job.id !== jobId),
           activeJobs: state.activeJobs - 1,
         })),
+
+      // OCR Service
+      initializeOCRService: () => {
+        const settings = get().settings
+        if (!serviceManager.hasOCRService()) {
+          serviceManager.initializeOCRService(settings.ocr)
+        }
+      },
     }),
     {
       name: "ocr-store",

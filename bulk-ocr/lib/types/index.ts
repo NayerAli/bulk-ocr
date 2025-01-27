@@ -1,8 +1,21 @@
-// OCR Types
-export type OCRProvider = "claude" | "openai"
-export type ProcessingStatus = "queued" | "analyzing" | "converting" | "processing" | "completed" | "failed"
+// Basic types
 export type FileType = "pdf" | "image"
 
+export type ProcessingStatus = "queued" | "analyzing" | "converting" | "processing" | "completed" | "failed"
+
+// OCR related types
+export interface OCRSettings {
+  provider: "claude" | "openai"
+  apiKeys: {
+    claude?: string
+    openai?: string
+  }
+  language: string
+  retryAttempts: number
+  retryDelay: number
+}
+
+// Processing related types
 export interface ProcessingJob {
   id: string
   fileName: string
@@ -16,8 +29,43 @@ export interface ProcessingJob {
   createdAt: Date
   startedAt?: Date
   completedAt?: Date
-  details: ProcessingDetail[]
+  details: {
+    stage: string
+    message: string
+    timestamp: Date
+  }[]
 }
+
+// Queue related types
+export interface Job {
+  id: string
+  fileName: string
+  totalPages: number
+  processedPages: number
+  status: "queued" | "processing" | "completed" | "failed"
+  progress: number
+  error?: string
+  createdAt: Date
+}
+
+// Error types
+export class ProcessingError extends Error {
+  details?: Record<string, any>
+
+  constructor(message: string, details?: Record<string, any>) {
+    super(message)
+    this.name = "ProcessingError"
+    this.details = details
+    
+    // Maintains proper stack trace for where error was thrown (only available on V8)
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, ProcessingError)
+    }
+  }
+}
+
+// OCR Types
+export type OCRProvider = "claude" | "openai"
 
 export interface ProcessingDetail {
   stage: string
@@ -27,18 +75,6 @@ export interface ProcessingDetail {
 }
 
 // Settings Types
-export interface OCRSettings {
-  provider: OCRProvider
-  apiKeys: {
-    claude?: string
-    openai?: string
-  }
-  language: "arabic" | "persian"
-  confidence: number
-  retryAttempts: number
-  retryDelay: number
-}
-
 export interface ProcessingSettings {
   maxConcurrentJobs: number
   chunkSize: number
@@ -66,18 +102,6 @@ export interface AppSettings {
   processing: ProcessingSettings
   upload: UploadSettings
   display: DisplaySettings
-}
-
-// Error Types
-export class ProcessingError extends Error {
-  constructor(
-    message: string,
-    public details?: any,
-    public jobId?: string,
-  ) {
-    super(message)
-    this.name = "ProcessingError"
-  }
 }
 
 // Metrics Types

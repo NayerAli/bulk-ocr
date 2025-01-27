@@ -1,9 +1,25 @@
 import { generateText } from "ai"
 import { anthropic } from "@ai-sdk/anthropic"
 import { openai } from "@ai-sdk/openai"
-import type { OCRSettings } from "@/lib/types"
-import { ProcessingError } from "@/lib/types"
-import { delay, handleError } from "@/lib/utils"
+import type { OCRSettings } from "../types"
+import { ProcessingError } from "../types"
+import { delay, handleError } from "../utils"
+
+interface GenerateTextOptions {
+  model: any
+  prompt: string
+  system?: string
+  maxTokens?: number
+  data?: {
+    images: string[]
+  }
+}
+
+interface OCRResult {
+  success: boolean
+  text?: string
+  error?: string
+}
 
 export class OCRService {
   private settings: OCRSettings
@@ -27,7 +43,7 @@ export class OCRService {
         }
       }
     } catch (error) {
-      throw new ProcessingError("Failed to initialize OCR service", { error: handleError(error) })
+      throw new ProcessingError("Failed to initialize OCR service", handleError(error))
     }
   }
 
@@ -60,11 +76,14 @@ export class OCRService {
           throw new ProcessingError(`Unsupported provider: ${provider}`)
       }
     } catch (error) {
-      throw new ProcessingError("Configuration validation failed", { error: handleError(error) })
+      if (error instanceof ProcessingError) {
+        throw error
+      }
+      throw new ProcessingError("Configuration validation failed", handleError(error))
     }
   }
 
-  async processImage(imageData: string, retryCount = 0): Promise<{ success: boolean; text?: string; error?: string }> {
+  async processImage(imageData: string, retryCount = 0): Promise<OCRResult> {
     try {
       await this.validateConfiguration()
 
@@ -87,11 +106,10 @@ export class OCRService {
       const result = await generateText({
         model,
         prompt,
-        system:
-          "You are a specialized OCR system for extracting text from images and PDFs, with particular expertise in Arabic and Persian scripts.",
+        system: "You are a specialized OCR system for extracting text from images and PDFs, with particular expertise in Arabic and Persian scripts.",
         maxTokens: 4096,
-        images: [imageData],
-      })
+        data: { images: [imageData] },
+      } as GenerateTextOptions)
 
       if (!result?.text) {
         throw new ProcessingError("No text generated from OCR service")

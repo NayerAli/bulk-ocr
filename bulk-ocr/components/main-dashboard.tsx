@@ -10,18 +10,13 @@ import { useStore } from "@/lib/stores/store"
 import { useEffect } from "react"
 
 export function MainDashboard() {
-  const { jobs, updateMetrics, settings } = useStore()
+  const jobs = useStore((state) => state.jobs)
+  const settings = useStore((state) => state.settings)
 
-  // Update metrics periodically
+  // Initialize OCR service on mount
   useEffect(() => {
-    updateMetrics(jobs)
-
-    const interval = setInterval(() => {
-      updateMetrics(jobs)
-    }, settings.display.dashboardRefreshRate)
-
-    return () => clearInterval(interval)
-  }, [jobs, updateMetrics, settings.display.dashboardRefreshRate])
+    useStore.getState().initializeOCRService()
+  }, [])
 
   return (
     <div className="container mx-auto py-8 px-4">
