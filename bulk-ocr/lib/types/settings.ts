@@ -1,8 +1,21 @@
 export type OCRProvider = "claude" | "openai"
 
+export type MimeType = 
+  | "application/pdf" 
+  | "application/x-pdf"
+  | "application/acrobat"
+  | "applications/vnd.pdf"
+  | "image/jpeg" 
+  | "image/jpg" 
+  | "image/pjpeg"
+  | "image/x-citrix-jpeg"
+  | "image/png" 
+  | "image/tiff" 
+  | "image/bmp"
+
 export interface OCRSettings {
   provider: OCRProvider
-  model?: string
+  model: string
   apiKeys: {
     claude?: string
     openai?: string
@@ -11,6 +24,7 @@ export interface OCRSettings {
   confidence: number
   retryAttempts: number
   retryDelay: number
+  isTestMode?: boolean
 }
 
 export interface ProcessingSettings {
@@ -23,7 +37,7 @@ export interface ProcessingSettings {
 
 export interface UploadSettings {
   maxFileSize: number // bytes
-  allowedFileTypes: string[]
+  allowedFileTypes: MimeType[]
   maxSimultaneousUploads: number
 }
 

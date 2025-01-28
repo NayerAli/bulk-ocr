@@ -4,6 +4,7 @@ import { useStore } from "../stores/store"
 import { serviceManager } from "./service-manager"
 import { processImage } from "../actions/ocr-actions"
 import { processImageForOCR } from "@/lib/utils/image-processing"
+import path from "path"
 
 const CHUNK_SIZE = 10 // Process 10 pages at a time
 const CONCURRENT_CHUNKS = 3 // Process 3 chunks concurrently
@@ -127,29 +128,49 @@ export class ProcessingWorker {
     const store = useStore.getState()
     const settings = store.settings
 
-    if (!job.file) {
-      throw new Error('No file available for processing')
+    if (!job.fileName) {
+      throw new Error('No file name available for processing')
     }
 
     // Process each page in the chunk
     const results = await Promise.all(
       pageNumbers.map(async (pageNumber) => {
-        // Process the image
-        const processedData = await processImageForOCR(job.file!)
+        try {
+          // Get the image path for this page
+          const imagePath = path.join('data', 'uploads', job.fileName)
 
-        // Use the server action for OCR processing
-        const result = await processImage(processedData, settings)
-        
-        // Handle success case with metadata
-        if (result.success && 'metadata' in result && result.text) {
-          return {
-            pageNumber,
-            text: result.text,
+          // Process the image
+          const processedData = await processImageForOCR({ 
+            id: job.id,
+            name: job.fileName,
+            type: job.fileType,
+            size: job.fileSize,
+            path: imagePath,
+            uploadedAt: job.createdAt
+          })
+
+          // Use the server action for OCR processing
+          const result = await processImage(processedData, settings)
+          
+          // Handle success case with metadata
+          if (result.success && 'text' in result && result.text) {
+            // Save the page result with image path
+            await store.savePageResult(job.id, pageNumber, result.text, {
+              ...result.metadata,
+              imagePath
+            })
+            
+            return {
+              pageNumber,
+              text: result.text,
+            }
           }
+          
+          // Handle error case
+          throw new Error(result.error || 'No text generated')
+        } catch (error) {
+          throw new Error(`Failed to process page ${pageNumber}: ${error instanceof Error ? error.message : 'Unknown error'}`)
         }
-        
-        // Handle error case
-        throw new Error(`Failed to process page ${pageNumber}: ${result.error || 'No text generated'}`)
       }),
     )
 

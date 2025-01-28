@@ -3,10 +3,10 @@
 import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
-import { useSettings } from "@/lib/stores/settings-store"
+import { useStore } from "@/lib/stores/store"
 
 export function ProcessingSettings() {
-  const { settings, updateSettings } = useSettings()
+  const { settings, updateSettings } = useStore()
 
   const handleChange = (key: keyof typeof settings.processing, value: string) => {
     const numValue = Number.parseInt(value, 10)

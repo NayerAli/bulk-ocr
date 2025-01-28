@@ -1,25 +1,36 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { AppSettings, ProcessingJob, SystemMetrics, OCRProvider, ProcessingMetadata } from "../types"
+import type { AppSettings, ProcessingJob, OCRSettings, ProcessingMetadata } from "@/lib/types"
+import type { MimeType } from "@/lib/types/settings"
 import { serviceManager } from "../services/service-manager"
 import { ProcessingWorker } from "../services/processing-worker"
 import { processImage as processImageAction } from "../actions/ocr-actions"
-import { db } from "../services/db"
 
-interface Store {
-  // Settings
+interface StoreState {
+  jobs: ProcessingJob[]
   settings: AppSettings
-  updateSettings: (newSettings: Partial<AppSettings>) => void
-  updateOCRProvider: (provider: OCRProvider) => void
-  updateAPIKey: (provider: OCRProvider, apiKey: string) => void
+  isInitialized: boolean
+  isLoading: boolean
+  error: string | null
+  worker: ProcessingWorker | null
+  activeJobs: number
+  isServicesInitialized: boolean
+
+  // Initialization
+  initialize: () => Promise<void>
+  
+  // Settings actions
+  updateSettings: (settings: Partial<AppSettings>) => Promise<void>
+  updateOCRProvider: (provider: OCRSettings['provider']) => Promise<void>
+  updateAPIKey: (provider: OCRSettings['provider'], apiKey: string) => Promise<void>
+  
+  // Job actions
+  addJob: (job: ProcessingJob) => Promise<void>
+  updateJob: (id: string, updates: Partial<ProcessingJob>) => Promise<void>
+  removeJob: (id: string) => Promise<void>
+  deleteJob: (jobId: string) => void
 
   // Processing
-  worker: ProcessingWorker | null
-  jobs: ProcessingJob[]
-  activeJobs: number
-  addJob: (job: ProcessingJob) => void
-  updateJob: (jobId: string, updates: Partial<ProcessingJob>) => void
-  removeJob: (jobId: string) => void
   processImage: (imageData: string, settings: AppSettings, pageNumber?: number) => Promise<{ 
     success: boolean
     text?: string
@@ -31,10 +42,6 @@ interface Store {
   getPageResults: (jobId: string) => Promise<{ [key: number]: string }>
   getPageResult: (jobId: string, pageNumber: number) => Promise<string | undefined>
   savePageResult: (jobId: string, pageNumber: number, text: string, metadata?: ProcessingMetadata) => Promise<void>
-
-  // Services
-  initializeServices: () => void
-  isServicesInitialized: boolean
 }
 
 interface OCRResult {
@@ -44,7 +51,7 @@ interface OCRResult {
   metadata?: ProcessingMetadata;
 }
 
-const DEFAULT_SETTINGS: AppSettings = {
+export const DEFAULT_SETTINGS: AppSettings = {
   ocr: {
     provider: "claude",
     model: "claude-3-opus-20240229",
@@ -53,79 +60,277 @@ const DEFAULT_SETTINGS: AppSettings = {
     retryDelay: 1000,
     confidence: 0.8,
     apiKeys: {},
+    isTestMode: false
   },
   processing: {
-    maxConcurrentJobs: 3,
+    maxConcurrentJobs: 2,
     chunkSize: 10,
-    concurrentChunks: 3,
+    concurrentChunks: 2,
     retryAttempts: 3,
     retryDelay: 1000,
   },
   upload: {
     maxFileSize: 500 * 1024 * 1024, // 500MB
-    allowedFileTypes: [".pdf", ".jpg", ".jpeg", ".png"],
+    allowedFileTypes: [
+      "application/pdf",
+      "image/jpeg",
+      "image/jpg",
+      "image/pjpeg",
+      "image/png",
+      "image/tiff",
+      "image/bmp"
+    ] as MimeType[],
     maxSimultaneousUploads: 5,
   },
   display: {
-    recentDocsCount: 10,
+    recentDocsCount: 5,
     dashboardRefreshRate: 5000,
     theme: "system",
-    dateFormat: "PP",
-    timeFormat: "pp",
+    dateFormat: "MMM D, YYYY",
+    timeFormat: "h:mm A",
   },
 }
 
-export const useStore = create<Store>()(
+export const useStore = create<StoreState>()(
   persist(
     (set, get) => ({
-      // Settings
+      jobs: [],
       settings: DEFAULT_SETTINGS,
-      updateSettings: async (newSettings) => {
-        const settings = {
-          ...get().settings,
-          ...newSettings,
+      isInitialized: false,
+      isLoading: false,
+      error: null,
+      worker: null,
+      activeJobs: 0,
+      isServicesInitialized: false,
+
+      initialize: async () => {
+        if (get().isLoading || get().isInitialized) return;
+
+        set({ isLoading: true, error: null });
+        try {
+          // Fetch settings from API
+          const settingsRes = await fetch('/api/db/settings')
+          const settings = await settingsRes.json()
+          
+          // Fetch jobs from API
+          const jobsRes = await fetch('/api/db/jobs')
+          const jobs = await jobsRes.json()
+          
+          if (!serviceManager.hasOCRService()) {
+            serviceManager.initializeOCRService(settings.ocr);
+          }
+
+          const worker = new ProcessingWorker();
+
+          set({ 
+            jobs, 
+            settings,
+            worker,
+            isInitialized: true,
+            isLoading: false,
+            isServicesInitialized: true,
+            error: null
+          });
+        } catch (error) {
+          console.error('Failed to initialize store:', error);
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to initialize application',
+            isLoading: false,
+            isInitialized: false,
+            isServicesInitialized: false
+          });
         }
-        await db.saveSettings(settings)
-        set({ settings })
-      },
-      updateOCRProvider: async (provider) => {
-        const settings = {
-          ...get().settings,
-          ocr: {
-            ...get().settings.ocr,
-            provider,
-            apiKeys: {
-              ...get().settings.ocr.apiKeys,
-              [provider]: ""
-            },
-            model: ""
-          },
-        }
-        await db.saveSettings(settings)
-        set({ settings })
-      },
-      updateAPIKey: async (provider, apiKey) => {
-        const settings = {
-          ...get().settings,
-          ocr: {
-            ...get().settings.ocr,
-            apiKeys: {
-              ...get().settings.ocr.apiKeys,
-              [provider]: apiKey
-            },
-          },
-        }
-        await db.saveSettings(settings)
-        set({ settings })
       },
 
-      // Processing
-      worker: null,
-      jobs: [],
-      activeJobs: 0,
+      updateSettings: async (updates) => {
+        const { settings } = get();
+        if (!settings) return;
+
+        set({ isLoading: true, error: null });
+        try {
+          const newSettings = {
+            ...settings,
+            ...updates,
+            ocr: { ...settings.ocr, ...updates.ocr },
+            processing: { ...settings.processing, ...updates.processing },
+            upload: { ...settings.upload, ...updates.upload },
+            display: { ...settings.display, ...updates.display }
+          };
+          
+          const res = await fetch('/api/db/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newSettings)
+          })
+          
+          if (!res.ok) throw new Error('Failed to update settings')
+          
+          const savedSettings = await res.json()
+          set({ settings: savedSettings, isLoading: false });
+        } catch (error) {
+          console.error('Failed to update settings:', error);
+          set({ 
+            error: 'Failed to update settings',
+            isLoading: false 
+          });
+        }
+      },
+
+      updateOCRProvider: async (provider) => {
+        const { settings } = get();
+        if (!settings) return;
+
+        set({ isLoading: true, error: null });
+        try {
+          const newSettings = {
+            ...settings,
+            ocr: {
+              ...settings.ocr,
+              provider,
+              model: ""
+            }
+          };
+          
+          const res = await fetch('/api/db/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newSettings)
+          })
+          
+          if (!res.ok) throw new Error('Failed to update OCR provider')
+          
+          const savedSettings = await res.json()
+          set({ settings: savedSettings, isLoading: false });
+        } catch (error) {
+          console.error('Failed to update OCR provider:', error);
+          set({ 
+            error: 'Failed to update OCR provider',
+            isLoading: false 
+          });
+        }
+      },
+
+      updateAPIKey: async (provider, apiKey) => {
+        const { settings } = get();
+        if (!settings) return;
+
+        set({ isLoading: true, error: null });
+        try {
+          const newSettings = {
+            ...settings,
+            ocr: {
+              ...settings.ocr,
+              apiKeys: {
+                ...settings.ocr.apiKeys,
+                [provider]: apiKey
+              }
+            }
+          };
+          
+          const res = await fetch('/api/db/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newSettings)
+          })
+          
+          if (!res.ok) throw new Error('Failed to update API key')
+          
+          const savedSettings = await res.json()
+          set({ settings: savedSettings, isLoading: false });
+        } catch (error) {
+          console.error('Failed to update API key:', error);
+          set({ 
+            error: 'Failed to update API key',
+            isLoading: false 
+          });
+        }
+      },
+
+      addJob: async (job) => {
+        set({ isLoading: true, error: null });
+        try {
+          const res = await fetch('/api/db/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(job)
+          })
+          
+          if (!res.ok) throw new Error('Failed to add job')
+          
+          const jobs = await res.json()
+          
+          // Get the worker instance and add the job to it
+          const { worker } = get();
+          if (worker) {
+            worker.addJob(job);
+          } else {
+            console.error('Worker not initialized');
+            throw new Error('Processing worker not initialized');
+          }
+          
+          set({ jobs, isLoading: false });
+        } catch (error) {
+          console.error('Failed to add job:', error);
+          set({ 
+            error: 'Failed to add job',
+            isLoading: false 
+          });
+        }
+      },
+
+      updateJob: async (id, updates) => {
+        set({ isLoading: true, error: null });
+        try {
+          const res = await fetch('/api/db/jobs', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, updates })
+          })
+          
+          if (!res.ok) throw new Error('Failed to update job')
+          
+          const jobs = await res.json()
+          set({ jobs, isLoading: false });
+        } catch (error) {
+          console.error('Failed to update job:', error);
+          set({ 
+            error: 'Failed to update job',
+            isLoading: false 
+          });
+        }
+      },
+
+      removeJob: async (id) => {
+        set({ isLoading: true, error: null });
+        try {
+          const res = await fetch('/api/db/jobs', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          })
+          
+          if (!res.ok) throw new Error('Failed to delete job')
+          
+          const jobs = await res.json()
+          set({ jobs, isLoading: false });
+        } catch (error) {
+          console.error('Failed to remove job:', error);
+          set({ 
+            error: 'Failed to remove job',
+            isLoading: false 
+          });
+        }
+      },
+
+      deleteJob: (jobId) => {
+        set((state) => ({
+          jobs: state.jobs.filter((job) => job.id !== jobId)
+        }))
+      },
+
       processImage: async (imageData, settings, pageNumber = 1) => {
         try {
-          const result = await processImageAction(imageData, settings) as OCRResult
+          const result = await processImageAction(imageData, settings) as OCRResult;
           if (result.success && result.text && result.metadata) {
             // Cache the result
             const job: ProcessingJob = {
@@ -145,145 +350,88 @@ export const useStore = create<Store>()(
                 message: "Completed",
                 timestamp: new Date(),
               }]
-            }
-            await db.saveJob(job)
+            };
 
-            // Save page result
-            await db.savePageResult({
-              jobId: job.id,
-              pageNumber,
-              text: result.text,
-              metadata: {
-                width: result.metadata.width,
-                height: result.metadata.height,
-                dpi: result.metadata.dpi,
-                orientation: result.metadata.orientation,
-              },
-              createdAt: new Date(),
+            // Save job via API
+            await fetch('/api/db/jobs', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(job)
+            })
+
+            // Save page result via API
+            await fetch('/api/db/pages', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jobId: job.id,
+                pageNumber,
+                text: result.text,
+                metadata: {
+                  width: result.metadata.width,
+                  height: result.metadata.height,
+                  dpi: result.metadata.dpi,
+                  orientation: result.metadata.orientation,
+                },
+                createdAt: new Date(),
+              })
             })
           }
-          return result
+          return result;
         } catch (error) {
-          console.error('Error processing image:', error)
+          console.error('Error processing image:', error);
           return {
             success: false,
             error: error instanceof Error ? error.message : 'Failed to process image'
-          }
+          };
         }
       },
-      isServicesInitialized: false,
 
-      addJob: async (job) => {
-        const { worker, isServicesInitialized } = get()
-        if (!isServicesInitialized) {
-          console.error('Services not initialized')
-          return
-        }
-        if (!worker) {
-          console.error('Processing worker not initialized')
-          return
-        }
-
-        await db.saveJob(job)
-        set((state) => ({
-          jobs: [...state.jobs, job],
-          activeJobs: state.activeJobs + 1,
-        }))
-        
-        worker.addJob(job)
-      },
-
-      updateJob: async (jobId, updates) => {
-        await db.updateJob(jobId, updates)
-        set((state) => ({
-          jobs: state.jobs.map((job) => (job.id === jobId ? { ...job, ...updates } : job)),
-          activeJobs:
-            updates.status === "completed" || updates.status === "failed" ? state.activeJobs - 1 : state.activeJobs,
-        }))
-      },
-
-      removeJob: async (jobId) => {
-        await db.deleteFile(jobId)
-        await db.deletePageResults(jobId)
-        set((state) => ({
-          jobs: state.jobs.filter((job) => job.id !== jobId),
-          activeJobs: state.activeJobs - 1,
-        }))
-      },
-
-      // Page Results
       getPageResults: async (jobId: string) => {
-        const results = await db.getPageResults(jobId)
-        return results.reduce((acc, result) => ({
+        const res = await fetch(`/api/db/pages?jobId=${jobId}`)
+        const results = await res.json()
+        return results.reduce((acc: Record<number, string>, result: any) => ({
           ...acc,
           [result.pageNumber]: result.text
-        }), {})
+        }), {});
       },
 
       getPageResult: async (jobId: string, pageNumber: number) => {
-        const result = await db.getPageResult(jobId, pageNumber)
-        return result?.text
+        const res = await fetch(`/api/db/pages?jobId=${jobId}&pageNumber=${pageNumber}`)
+        const result = await res.json()
+        return result?.text;
       },
 
       savePageResult: async (jobId: string, pageNumber: number, text: string, metadata?: ProcessingMetadata) => {
-        await db.savePageResult({
-          jobId,
-          pageNumber,
-          text,
-          metadata: metadata ? {
-            width: metadata.width,
-            height: metadata.height,
-            dpi: metadata.dpi,
-            orientation: metadata.orientation,
-          } : undefined,
-          createdAt: new Date(),
-        })
-      },
-
-      // Services initialization
-      initializeServices: async () => {
-        const { settings, worker } = get()
-        let needsUpdate = false
-        
-        // Load settings from IndexedDB
-        const savedSettings = await db.getSettings()
-        if (savedSettings) {
-          set({ settings: savedSettings })
-        }
-        
-        // Load jobs from IndexedDB
-        const savedJobs = await db.getJobs()
-        set({ jobs: savedJobs })
-        
-        // Initialize OCR service if needed
-        if (!serviceManager.hasOCRService()) {
-          serviceManager.initializeOCRService(settings.ocr)
-          needsUpdate = true
-        }
-        
-        // Initialize processing worker if needed
-        if (!worker) {
-          needsUpdate = true
-        }
-
-        if (needsUpdate) {
-          set({ 
-            worker: new ProcessingWorker(),
-            isServicesInitialized: true
+        await fetch('/api/db/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId,
+            pageNumber,
+            text,
+            metadata: metadata ? {
+              width: metadata.width,
+              height: metadata.height,
+              dpi: metadata.dpi,
+              orientation: metadata.orientation,
+            } : undefined,
+            createdAt: new Date(),
           })
-        }
-
-        // Cleanup old data (older than 30 days)
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        await db.cleanup(thirtyDaysAgo)
-      },
+        })
+      }
     }),
     {
       name: "ocr-store",
       partialize: (state) => ({
         settings: state.settings,
       }),
-    },
-  ),
-)
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state.initialize();
+        }
+      }
+    }
+  )
+);
 

@@ -2,6 +2,10 @@
  * Image processing utilities
  */
 
+import fs from 'fs'
+import type { CachedFile } from '../services/database-types'
+import { readFileFromDisk } from '../actions/file-actions'
+
 // Validate base64 data URL format
 export function isValidBase64DataUrl(dataUrl: string): boolean {
   const regex = /^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,([a-zA-Z0-9+/]+={0,2})$/
@@ -46,6 +50,49 @@ export async function imageToBase64(file: File): Promise<string> {
     }
     
     reader.readAsDataURL(file)
+  })
+}
+
+// Helper function to convert File/Blob to base64 data URL
+async function fileToBase64(file: File | Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    
+    reader.onload = () => {
+      try {
+        if (typeof reader.result !== 'string') {
+          throw new Error('Failed to convert file to base64: Invalid result type')
+        }
+
+        // Validate the base64 data URL format
+        if (!isValidBase64DataUrl(reader.result)) {
+          // If invalid, try to fix the format
+          const mimeType = file.type || 'application/octet-stream'
+          const base64Data = reader.result.replace(/^data:.*?;base64,/, '')
+          const formattedDataUrl = `data:${mimeType};base64,${base64Data}`
+          
+          if (!isValidBase64DataUrl(formattedDataUrl)) {
+            throw new Error('Failed to create valid base64 data URL')
+          }
+          
+          resolve(formattedDataUrl)
+        } else {
+          resolve(reader.result)
+        }
+      } catch (error) {
+        reject(error)
+      }
+    }
+
+    reader.onerror = () => {
+      reject(new Error('Failed to read file: ' + (reader.error?.message || 'Unknown error')))
+    }
+
+    try {
+      reader.readAsDataURL(file)
+    } catch (error) {
+      reject(new Error('Failed to start file reading: ' + (error instanceof Error ? error.message : 'Unknown error')))
+    }
   })
 }
 
@@ -106,19 +153,36 @@ export async function compressImage(file: File): Promise<File> {
         0.8 // Quality setting (0.8 = 80% quality)
       )
     }
-    
-    img.onerror = () => reject(new Error('Failed to load image for compression'))
+
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src)
+      reject(new Error('Failed to load image for compression'))
+    }
   })
 }
 
 // Process image for OCR
-export async function processImageForOCR(file: File): Promise<string> {
+export async function processImageForOCR(file: CachedFile | File): Promise<string> {
   try {
+    let fileToProcess: File
+    
+    if ('path' in file) {
+      // Handle CachedFile by reading from disk using server action
+      const { data, type } = await readFileFromDisk(file.path)
+      
+      // Convert base64 to blob
+      const response = await fetch(data)
+      const blob = await response.blob()
+      fileToProcess = new File([blob], file.name, { type })
+    } else {
+      fileToProcess = file
+    }
+    
     // First compress the image if needed
-    const compressedFile = await compressImage(file)
+    const compressedFile = await compressImage(fileToProcess)
     
     // Convert to base64
-    const base64Data = await imageToBase64(compressedFile)
+    const base64Data = await fileToBase64(compressedFile)
     
     // Validate the base64 data
     if (!isValidBase64DataUrl(base64Data)) {
@@ -130,47 +194,4 @@ export async function processImageForOCR(file: File): Promise<string> {
     console.error('Error processing image:', error)
     throw new Error(`Failed to process image: ${error instanceof Error ? error.message : 'Unknown error'}`)
   }
-}
-
-// Helper function to convert File/Blob to base64 data URL
-async function fileToBase64(file: File | Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    
-    reader.onload = () => {
-      try {
-        if (typeof reader.result !== 'string') {
-          throw new Error('Failed to convert file to base64: Invalid result type')
-        }
-
-        // Validate the base64 data URL format
-        if (!isValidBase64DataUrl(reader.result)) {
-          // If invalid, try to fix the format
-          const mimeType = file.type || 'application/octet-stream'
-          const base64Data = reader.result.replace(/^data:.*?;base64,/, '')
-          const formattedDataUrl = `data:${mimeType};base64,${base64Data}`
-          
-          if (!isValidBase64DataUrl(formattedDataUrl)) {
-            throw new Error('Failed to create valid base64 data URL')
-          }
-          
-          resolve(formattedDataUrl)
-        } else {
-          resolve(reader.result)
-        }
-      } catch (error) {
-        reject(error)
-      }
-    }
-
-    reader.onerror = () => {
-      reject(new Error('Failed to read file: ' + (reader.error?.message || 'Unknown error')))
-    }
-
-    try {
-      reader.readAsDataURL(file)
-    } catch (error) {
-      reject(new Error('Failed to start file reading: ' + (error instanceof Error ? error.message : 'Unknown error')))
-    }
-  })
 } 

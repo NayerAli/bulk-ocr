@@ -287,7 +287,10 @@ export async function processImage(imageData: string, settings: any) {
       throw new Error(`Image size exceeds maximum limit of ${MAX_IMAGE_SIZE / (1024 * 1024)}MB`)
     }
 
+    // Initialize OCR service with settings
     const service = new OCRService(settings.ocr)
+    
+    // Process the image
     const result = await service.processImage(imageData)
     
     if (!result.success) {
@@ -295,11 +298,16 @@ export async function processImage(imageData: string, settings: any) {
     }
     
     return {
-      ...result,
+      success: true,
+      text: result.text,
       metadata: {
         mimeType,
         sizeInBytes,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        width: 0, // These will be set by the image processing
+        height: 0,
+        dpi: 0,
+        orientation: 0
       }
     }
   } catch (error: unknown) {

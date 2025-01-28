@@ -3,32 +3,24 @@
 import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
-import { useSettings } from "@/lib/stores/settings-store"
+import { useStore } from "@/lib/stores/store"
 import { formatFileSize } from "@/lib/utils"
 
 export function UploadSettings() {
-  const { settings, updateSettings } = useSettings()
+  const { settings, updateSettings } = useStore()
 
-  const handleMaxFileSizeChange = (value: string) => {
-    const size = Number.parseInt(value, 10) * 1024 * 1024 // Convert MB to bytes
-    if (!isNaN(size) && size > 0) {
-      updateSettings({
-        upload: {
-          ...settings.upload,
-          maxFileSize: size,
-        },
-      })
+  const handleChange = (key: keyof typeof settings.upload, value: string) => {
+    if (key === "maxFileSize" || key === "maxSimultaneousUploads") {
+      const numValue = Number.parseInt(value, 10)
+      if (!isNaN(numValue) && numValue > 0) {
+        updateSettings({
+          upload: {
+            ...settings.upload,
+            [key]: key === "maxFileSize" ? numValue * 1024 * 1024 : numValue,
+          },
+        })
+      }
     }
-  }
-
-  const handleFileTypesChange = (value: string) => {
-    const types = value.split(",").map((t) => t.trim())
-    updateSettings({
-      upload: {
-        ...settings.upload,
-        allowedFileTypes: types,
-      },
-    })
   }
 
   return (
@@ -40,19 +32,11 @@ export function UploadSettings() {
             type="number"
             min="1"
             value={Math.floor(settings.upload.maxFileSize / (1024 * 1024))}
-            onChange={(e) => handleMaxFileSizeChange(e.target.value)}
+            onChange={(e) => handleChange("maxFileSize", e.target.value)}
           />
-          <p className="text-sm text-muted-foreground">Current: {formatFileSize(settings.upload.maxFileSize)}</p>
-        </div>
-
-        <div className="space-y-2">
-          <Label>Allowed File Types</Label>
-          <Input
-            value={settings.upload.allowedFileTypes.join(", ")}
-            onChange={(e) => handleFileTypesChange(e.target.value)}
-            placeholder=".pdf, .jpg, .jpeg, .png"
-          />
-          <p className="text-sm text-muted-foreground">Comma-separated list of file extensions</p>
+          <p className="text-xs text-muted-foreground">
+            Current: {formatFileSize(settings.upload.maxFileSize)}
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -61,17 +45,7 @@ export function UploadSettings() {
             type="number"
             min="1"
             value={settings.upload.maxSimultaneousUploads}
-            onChange={(e) => {
-              const value = Number.parseInt(e.target.value, 10)
-              if (!isNaN(value) && value > 0) {
-                updateSettings({
-                  upload: {
-                    ...settings.upload,
-                    maxSimultaneousUploads: value,
-                  },
-                })
-              }
-            }}
+            onChange={(e) => handleChange("maxSimultaneousUploads", e.target.value)}
           />
         </div>
       </CardContent>

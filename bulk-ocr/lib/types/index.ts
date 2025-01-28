@@ -1,3 +1,6 @@
+import type { MimeType } from "./settings"
+import type { CachedFile } from "../services/database-types"
+
 // Basic types
 export type FileType = "pdf" | "image"
 
@@ -11,6 +14,7 @@ export interface ProcessingMetadata {
   height?: number
   dpi?: number
   orientation?: number
+  imagePath?: string
 }
 
 // OCR related types
@@ -31,7 +35,7 @@ export interface OCRSettings {
 // Processing related types
 export interface ProcessingJob {
   id: string
-  file?: File
+  file?: CachedFile
   fileName: string
   fileType: FileType
   fileSize: number
@@ -102,7 +106,7 @@ export interface ProcessingSettings {
 
 export interface UploadSettings {
   maxFileSize: number
-  allowedFileTypes: string[]
+  allowedFileTypes: MimeType[]
   maxSimultaneousUploads: number
 }
 

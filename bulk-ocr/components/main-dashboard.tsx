@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -8,22 +9,53 @@ import { useStore } from "@/lib/stores/store"
 import { FileUpload } from "@/components/file-upload"
 import { ProcessingQueue } from "@/components/processing-queue"
 import { SettingsDialog } from "@/components/settings/settings-dialog"
-import { useEffect } from "react"
 import { formatFileSize, formatDate } from "@/lib/utils"
 
 export function MainDashboard() {
-  const jobs = useStore((state) => state.jobs)
-  const settings = useStore((state) => state.settings)
+  const { 
+    jobs, 
+    settings,
+    isInitialized,
+    isLoading,
+    error,
+    initialize 
+  } = useStore()
 
-  // Initialize services on mount
+  // Initialize store on mount
   useEffect(() => {
-    useStore.getState().initializeServices()
-  }, [])
+    initialize()
+  }, [initialize])
 
-  // Re-initialize services when provider changes
-  useEffect(() => {
-    useStore.getState().initializeServices()
-  }, [settings.ocr.provider])
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <Activity className="h-8 w-8 animate-spin text-primary mx-auto mb-4" />
+          <p className="text-lg font-medium">Initializing...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="h-8 w-8 text-destructive mx-auto mb-4" />
+          <p className="text-lg font-medium text-destructive">{error}</p>
+          <Button 
+            variant="outline" 
+            className="mt-4"
+            onClick={() => initialize()}
+          >
+            Retry
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   // Calculate metrics
   const metrics = {
@@ -50,13 +82,13 @@ export function MainDashboard() {
     .sort((a, b) => {
       return (new Date(b.completedAt || 0).getTime()) - (new Date(a.completedAt || 0).getTime())
     })
-    .slice(0, 5)
+    .slice(0, settings.display.recentDocsCount)
 
   const handleExportText = async (jobId: string) => {
     const job = jobs.find((j) => j.id === jobId)
-    if (!job || !job.text) return
+    if (!job || !job.result) return
 
-    const blob = new Blob([job.text], { type: "text/plain" })
+    const blob = new Blob([job.result], { type: "text/plain" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
@@ -139,7 +171,7 @@ export function MainDashboard() {
               <FileUpload />
             </div>
             <p className="text-xs text-muted-foreground mt-2 text-center">
-              Maximum file size: 500MB per document
+              Maximum file size: {formatFileSize(settings.upload.maxFileSize)} per document
             </p>
           </CardContent>
         </Card>

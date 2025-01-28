@@ -17,7 +17,7 @@ export class ValidationService {
     const errors: ValidationError[] = []
 
     // Check OCR provider configuration
-    const { provider, apiKeys } = settings.ocr
+    const { provider, apiKeys, model } = settings.ocr
     if (!provider) {
       errors.push({
         code: "OCR_PROVIDER_MISSING",
@@ -41,6 +41,16 @@ export class ValidationService {
         code: "API_KEY_INVALID",
         message: `Invalid API key format for ${provider}`,
         field: "ocr.apiKeys",
+        severity: "error",
+      })
+    }
+
+    // Check model selection
+    if (!model) {
+      errors.push({
+        code: "MODEL_MISSING",
+        message: "Please select a model for OCR processing",
+        field: "ocr.model",
         severity: "error",
       })
     }

@@ -1,337 +1,194 @@
 "use client"
 
-import { useCallback, useState, useEffect } from "react"
-import { useDropzone } from "react-dropzone"
-import { Card } from "@/components/ui/card"
-import { useToast } from "@/hooks/use-toast"
-import { useStore } from "@/lib/stores/store"
-import { ValidationService } from "@/lib/services/validation-service"
+import { useState } from "react"
+import { Upload, File, ImageIcon, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Settings, Upload } from "lucide-react"
-import { cn } from "@/lib/utils"
-import { processImageForOCR } from "@/lib/utils/image-processing"
-import type { FileType, ProcessingStatus, ProcessingJob } from "@/lib/types"
+import { Progress } from "@/components/ui/progress"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { useStore } from "@/lib/stores/store"
+import { formatFileSize } from "@/lib/utils"
+import type { CachedFile } from "@/lib/services/database-types"
 
-// Helper function to compress image
-async function compressImage(file: File): Promise<File> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.src = URL.createObjectURL(file)
-    
-    img.onload = () => {
-      URL.revokeObjectURL(img.src)
-      
-      const canvas = document.createElement('canvas')
-      let width = img.width
-      let height = img.height
-      
-      // Calculate new dimensions while maintaining aspect ratio
-      const maxDimension = 2048 // Max dimension for OCR
-      if (width > maxDimension || height > maxDimension) {
-        if (width > height) {
-          height = Math.round((height * maxDimension) / width)
-          width = maxDimension
-        } else {
-          width = Math.round((width * maxDimension) / height)
-          height = maxDimension
-        }
-      }
+type MimeTypes = 
+  | 'application/pdf'
+  | 'image/jpeg'
+  | 'image/jpg'
+  | 'image/png'
+  | 'image/tiff'
+  | 'image/bmp'
 
-      canvas.width = width
-      canvas.height = height
-      
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
-        reject(new Error('Failed to get canvas context'))
-        return
-      }
-      
-      // Draw image with smoothing
-      ctx.imageSmoothingEnabled = true
-      ctx.imageSmoothingQuality = 'high'
-      ctx.drawImage(img, 0, 0, width, height)
-      
-      // Convert to blob with quality adjustment
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            reject(new Error('Failed to compress image'))
-            return
-          }
-          // Convert Blob to File
-          const compressedFile = new File([blob], file.name, {
-            type: file.type,
-            lastModified: file.lastModified,
-          })
-          resolve(compressedFile)
-        },
-        file.type,
-        0.8 // Quality setting (0.8 = 80% quality)
-      )
-    }
-    
-    img.onerror = () => reject(new Error('Failed to load image for compression'))
-  })
+// MIME type mapping
+const ALLOWED_MIME_TYPES: Record<MimeTypes, boolean> = {
+  'application/pdf': true,
+  'image/jpeg': true,
+  'image/jpg': true,
+  'image/png': true,
+  'image/tiff': true,
+  'image/bmp': true
 }
 
-// Helper function to validate base64 data URL
-function isValidBase64DataUrl(dataUrl: string): boolean {
-  const regex = /^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,([a-zA-Z0-9+/]+={0,2})$/
-  return regex.test(dataUrl)
-}
-
-// Helper function to convert File/Blob to base64 data URL
-async function fileToBase64(file: File | Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    
-    reader.onload = () => {
-      try {
-        if (typeof reader.result !== 'string') {
-          throw new Error('Failed to convert file to base64: Invalid result type')
-        }
-
-        // Validate the base64 data URL format
-        if (!isValidBase64DataUrl(reader.result)) {
-          // If invalid, try to fix the format
-          const mimeType = file.type || 'application/octet-stream'
-          const base64Data = reader.result.replace(/^data:.*?;base64,/, '')
-          const formattedDataUrl = `data:${mimeType};base64,${base64Data}`
-          
-          if (!isValidBase64DataUrl(formattedDataUrl)) {
-            throw new Error('Failed to create valid base64 data URL')
-          }
-          
-          resolve(formattedDataUrl)
-        } else {
-          resolve(reader.result)
-        }
-      } catch (error) {
-        reject(error)
-      }
-    }
-
-    reader.onerror = () => {
-      reject(new Error('Failed to read file: ' + (reader.error?.message || 'Unknown error')))
-    }
-
-    try {
-      reader.readAsDataURL(file)
-    } catch (error) {
-      reject(new Error('Failed to start file reading: ' + (error instanceof Error ? error.message : 'Unknown error')))
-    }
-  })
-}
+const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp']
 
 export function FileUpload() {
-  const { toast } = useToast()
-  const [isDragging, setIsDragging] = useState(false)
-  const settings = useStore((state) => state.settings)
-  const addJob = useStore((state) => state.addJob)
-  const processImage = useStore((state) => state.processImage)
-  const initializeServices = useStore((state) => state.initializeServices)
-  const isServicesInitialized = useStore((state) => state.isServicesInitialized)
+  const { settings, isInitialized, addJob } = useStore()
+  const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [error, setError] = useState<string | null>(null)
 
-  // Initialize services on mount
-  useEffect(() => {
-    if (!isServicesInitialized) {
-      initializeServices()
-    }
-  }, [isServicesInitialized, initializeServices])
-
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
-    // Check if services are initialized
-    if (!isServicesInitialized) {
-      toast({
-        title: "Service Error",
-        description: "Services are not initialized. Please try again in a moment.",
-        variant: "destructive",
-      })
-      return
+  const validateFile = (file: File): string | null => {
+    // Check file size
+    if (file.size > settings.upload.maxFileSize) {
+      return `File too large: ${file.name}. Maximum size is ${formatFileSize(settings.upload.maxFileSize)}`
     }
 
-    // Validate configuration first
-    const configValidation = ValidationService.validateConfiguration(settings)
-    if (!configValidation.isValid) {
-      toast({
-        title: "Configuration Error",
-        description: (
-          <div className="space-y-2">
-            <p>Please fix the following issues before uploading files:</p>
-            <ul className="list-disc pl-4">
-              {configValidation.errors.map((error, index) => (
-                <li key={index} className="text-sm">
-                  {error.message}
-                </li>
-              ))}
-            </ul>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-2"
-              onClick={() => document.getElementById("settings-dialog-trigger")?.click()}
-            >
-              <Settings className="mr-2 h-4 w-4" />
-              Open Settings
-            </Button>
-          </div>
-        ),
-        variant: "destructive",
-      })
-      return
+    // Get file extension and normalize MIME type
+    const ext = `.${file.name.split('.').pop()?.toLowerCase()}`
+    const normalizedType = file.type.toLowerCase()
+
+    // Check file extension
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      return `File type not supported. Please use files with these extensions: ${ALLOWED_EXTENSIONS.join(', ')}`
     }
 
-    // Process each file
-    for (const file of acceptedFiles) {
-      const jobId = crypto.randomUUID()
-      const initialJob: ProcessingJob = {
-        id: jobId,
-        file,
-        fileName: file.name,
-        fileType: file.type.includes("pdf") ? ("pdf" as FileType) : ("image" as FileType),
-        fileSize: file.size,
-        totalPages: 1,
-        processedPages: 0,
-        status: "queued" as ProcessingStatus,
-        progress: 0,
-        createdAt: new Date(),
-        details: [
-          {
-            stage: "upload",
-            message: "File successfully uploaded",
-            timestamp: new Date(),
-          },
-        ],
+    // Check MIME type
+    if (!ALLOWED_MIME_TYPES[normalizedType as MimeTypes]) {
+      // Special handling for JPEG variations
+      if ((normalizedType === 'image/jpg' || normalizedType === 'image/jpeg') && 
+          (ext === '.jpg' || ext === '.jpeg')) {
+        return null
       }
+      return `File type ${file.type} is not supported. Please use supported file types.`
+    }
 
-      try {
+    return null
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files?.length) return
+
+    setUploading(true)
+    setProgress(0)
+    setError(null)
+
+    try {
+      let processed = 0
+      for (const file of files) {
         // Validate file
-        const fileValidation = ValidationService.validateFile(file, settings)
-        if (!fileValidation.isValid) {
-          toast({
-            title: `Error Processing ${file.name}`,
-            description: (
-              <ul className="list-disc pl-4">
-                {fileValidation.errors.map((error, index) => (
-                  <li key={index} className="text-sm">
-                    {error.message}
-                  </li>
-                ))}
-              </ul>
-            ),
-            variant: "destructive",
-          })
-          continue
+        const validationError = validateFile(file)
+        if (validationError) {
+          throw new Error(validationError)
         }
 
-        // Add job to queue
-        addJob(initialJob)
+        const formData = new FormData()
+        formData.append("file", file)
 
-        // Update status to processing
-        useStore.getState().updateJob(jobId, {
-          status: "processing",
-          progress: 10,
-          details: [
-            ...initialJob.details,
-            {
-              stage: "processing",
-              message: "Processing file",
-              timestamp: new Date(),
-            },
-          ],
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
         })
 
-        // Process the file
-        let processedData: string
-        if (file.type.includes("pdf")) {
-          // TODO: Implement PDF processing
-          throw new Error("PDF processing not yet implemented")
-        } else {
-          processedData = await processImageForOCR(file)
+        const result = await response.json()
+
+        if (!response.ok || !result.success) {
+          throw new Error(result.error || `Failed to upload ${file.name}`)
         }
 
-        // Update progress before OCR
-        useStore.getState().updateJob(jobId, {
-          progress: 50,
-          details: [
-            ...initialJob.details,
-            {
-              stage: "processing",
-              message: "Starting OCR processing",
-              timestamp: new Date(),
-            },
-          ],
+        // Add job to processing queue
+        await addJob({
+          id: result.id,
+          fileName: file.name,
+          fileType: file.type.startsWith('application/pdf') ? 'pdf' : 'image',
+          fileSize: file.size,
+          totalPages: result.totalPages || 1,
+          processedPages: 0,
+          status: 'queued',
+          progress: 0,
+          file: {
+            id: result.id,
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            path: result.filePath,
+            uploadedAt: new Date()
+          },
+          createdAt: new Date(),
+          details: [{
+            stage: 'upload',
+            message: 'File uploaded successfully',
+            timestamp: new Date()
+          }]
         })
 
-        // Process with OCR
-        const result = await processImage(processedData, settings)
-
-        if (!result.success) {
-          throw new Error(result.error)
-        }
-
-        // Update job with results
-        useStore.getState().updateJob(jobId, {
-          status: "completed",
-          progress: 100,
-          result: result.text,
-          metadata: result.metadata,
-          details: [
-            ...initialJob.details,
-            {
-              stage: "complete",
-              message: "Processing completed successfully",
-              timestamp: new Date(),
-            },
-          ],
-        })
-      } catch (error) {
-        console.error('Processing error:', error)
-        useStore.getState().updateJob(jobId, {
-          status: "failed",
-          error: error instanceof Error ? error.message : 'Processing failed',
-          details: [
-            ...initialJob.details,
-            {
-              stage: "error",
-              message: error instanceof Error ? error.message : 'Processing failed',
-              timestamp: new Date(),
-            },
-          ],
-        })
+        processed++
+        setProgress(Math.round((processed / files.length) * 100))
       }
-    }
-  }, [settings, addJob, processImage, toast, isServicesInitialized, initializeServices])
 
-  const { getRootProps, getInputProps } = useDropzone({
-    onDrop,
-    onDragEnter: () => setIsDragging(true),
-    onDragLeave: () => setIsDragging(false),
-    accept: {
-      'image/jpeg': ['.jpg', '.jpeg'],
-      'image/png': ['.png'],
-      'application/pdf': ['.pdf'],
-    },
-    maxSize: settings.upload.maxFileSize,
-  })
+      setTimeout(() => {
+        setUploading(false)
+        setProgress(0)
+      }, 500)
+    } catch (error) {
+      console.error("Upload error:", error)
+      setError(error instanceof Error ? error.message : "Failed to upload file")
+      setUploading(false)
+      setProgress(0)
+    }
+  }
 
   return (
-    <Card
-      {...getRootProps()}
-      className={cn(
-        "relative flex h-48 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 transition-colors",
-        isDragging && "border-primary bg-primary/5",
-      )}
-    >
-      <input {...getInputProps()} />
-      <div className="flex flex-col items-center gap-2 text-center">
-        <Upload className="h-8 w-8 text-muted-foreground mb-2" />
-        <p className="text-sm font-medium">Click to upload or drag and drop</p>
-        <p className="text-xs text-muted-foreground">
-          PDF, JPG, PNG • Up to {settings.upload.maxFileSize / (1024 * 1024)}MB
-        </p>
+    <div className="space-y-4">
+      <div className="p-8 border rounded-lg bg-white shadow-sm">
+        <div className="flex flex-col items-center justify-center gap-4">
+          <div className="flex items-center justify-center w-full">
+            <label
+              htmlFor="file-upload"
+              className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100"
+            >
+              <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                <Upload className="w-10 h-10 mb-3 text-gray-400" />
+                <p className="mb-2 text-sm text-gray-500">
+                  <span className="font-semibold">Click to upload</span> or drag and drop
+                </p>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <div className="flex items-center">
+                    <File className="w-4 h-4 mr-1" />
+                    PDF
+                  </div>
+                  <div className="flex items-center">
+                    <ImageIcon className="w-4 h-4 mr-1" />
+                    JPG, PNG, TIFF, BMP
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">Up to {formatFileSize(settings.upload.maxFileSize)}</p>
+              </div>
+              <input
+                id="file-upload"
+                type="file"
+                className="hidden"
+                multiple
+                accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp"
+                onChange={handleFileChange}
+                disabled={uploading || !isInitialized}
+              />
+            </label>
+          </div>
+          {uploading && (
+            <div className="w-full">
+              <Progress value={progress} className="w-full" />
+              <p className="text-sm text-gray-500 mt-2 text-center">{progress.toFixed(0)}% uploaded</p>
+            </div>
+          )}
+        </div>
       </div>
-    </Card>
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Error</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+    </div>
   )
 }
 

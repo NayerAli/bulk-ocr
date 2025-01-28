@@ -1,28 +1,32 @@
-import Dexie, { Table } from 'dexie';
 import type { ProcessingJob, AppSettings, OCRProvider } from '../types';
+import { DEFAULT_SETTINGS } from '../stores/store';
+import { SQLiteDatabase } from './sqlite-database';
 
-interface CachedModel {
+// Core interfaces that define our data models
+export interface CachedModel {
   provider: OCRProvider;
   modelId: string;
   capabilities: string[];
   lastChecked: Date;
 }
 
-interface CachedFile {
+export interface CachedFile {
   id: string;
   name: string;
   type: string;
   size: number;
-  data: Blob;
+  path: string; // Store file path instead of raw data
+  thumbnailUrl?: string;
   uploadedAt: Date;
 }
 
-interface PageResult {
+export interface PageResult {
   jobId: string;
   pageNumber: number;
   text: string;
   confidence?: number;
-  imageUrl?: string;
+  imagePath?: string; // Store image path instead of URL
+  thumbnailPath?: string;
   metadata?: {
     width?: number;
     height?: number;
@@ -32,124 +36,63 @@ interface PageResult {
   createdAt: Date;
 }
 
-export class OCRDatabase extends Dexie {
-  jobs!: Table<ProcessingJob>;
-  settings!: Table<AppSettings>;
-  models!: Table<CachedModel>;
-  files!: Table<CachedFile>;
-  pageResults!: Table<PageResult>;
-
-  constructor() {
-    super('OCRDatabase');
-    
-    this.version(1).stores({
-      jobs: '++id, status, createdAt',
-      settings: '++id',
-      models: '[provider+modelId], lastChecked',
-      files: 'id, name, type, uploadedAt',
-      pageResults: '[jobId+pageNumber], createdAt'
-    });
-  }
-
-  async saveJob(job: ProcessingJob): Promise<string> {
-    return await this.jobs.add(job);
-  }
-
-  async updateJob(id: string, updates: Partial<ProcessingJob>): Promise<void> {
-    await this.jobs.update(id, updates);
-  }
-
-  async getJobs(): Promise<ProcessingJob[]> {
-    return await this.jobs.orderBy('createdAt').reverse().toArray();
-  }
-
-  async saveSettings(settings: AppSettings): Promise<void> {
-    await this.settings.clear(); // Only keep latest settings
-    await this.settings.add(settings);
-  }
-
-  async getSettings(): Promise<AppSettings | undefined> {
-    return await this.settings.toCollection().first();
-  }
-
-  async cacheModel(model: CachedModel): Promise<void> {
-    await this.models.put(model);
-  }
-
-  async getCachedModels(provider: OCRProvider): Promise<CachedModel[]> {
-    return await this.models
-      .where('provider')
-      .equals(provider)
-      .toArray();
-  }
-
-  async saveFile(file: CachedFile): Promise<void> {
-    await this.files.put(file);
-  }
-
-  async getFile(id: string): Promise<CachedFile | undefined> {
-    return await this.files.get(id);
-  }
-
-  async deleteFile(id: string): Promise<void> {
-    await this.files.delete(id);
-  }
-
-  async savePageResult(pageResult: PageResult): Promise<void> {
-    await this.pageResults.put(pageResult);
-  }
-
-  async getPageResults(jobId: string): Promise<PageResult[]> {
-    return await this.pageResults
-      .where('jobId')
-      .equals(jobId)
-      .sortBy('pageNumber');
-  }
-
-  async getPageResult(jobId: string, pageNumber: number): Promise<PageResult | undefined> {
-    return await this.pageResults
-      .where('[jobId+pageNumber]')
-      .equals([jobId, pageNumber])
-      .first();
-  }
-
-  async deletePageResults(jobId: string): Promise<void> {
-    await this.pageResults
-      .where('jobId')
-      .equals(jobId)
-      .delete();
-  }
-
-  async cleanup(olderThan: Date): Promise<void> {
-    // Cleanup old jobs and files
-    const oldJobIds = await this.jobs
-      .where('createdAt')
-      .below(olderThan)
-      .primaryKeys();
-
-    // Delete associated page results first
-    for (const jobId of oldJobIds) {
-      await this.deletePageResults(jobId as string);
-    }
-
-    // Then delete jobs
-    await this.jobs
-      .where('createdAt')
-      .below(olderThan)
-      .delete();
-      
-    await this.files
-      .where('uploadedAt')
-      .below(olderThan)
-      .delete();
-
-    // Cleanup old model cache
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    await this.models
-      .where('lastChecked')
-      .below(thirtyDaysAgo)
-      .delete();
-  }
+// Database interface that defines all operations
+export interface DatabaseOperations {
+  initialize(): Promise<void>;
+  saveJob(job: ProcessingJob): Promise<string>;
+  updateJob(id: string, updates: Partial<ProcessingJob>): Promise<void>;
+  getJobs(): Promise<ProcessingJob[]>;
+  getJob(id: string): Promise<ProcessingJob | undefined>;
+  deleteJob(id: string): Promise<void>;
+  saveSettings(settings: AppSettings): Promise<void>;
+  getSettings(): Promise<AppSettings | undefined>;
+  cacheModel(model: CachedModel): Promise<void>;
+  getCachedModels(provider: OCRProvider): Promise<CachedModel[]>;
+  saveFile(file: CachedFile): Promise<void>;
+  getFile(id: string): Promise<CachedFile | undefined>;
+  deleteFile(id: string): Promise<void>;
+  savePageResult(pageResult: PageResult): Promise<void>;
+  getPageResults(jobId: string): Promise<PageResult[]>;
+  getPageResult(jobId: string, pageNumber: number): Promise<PageResult | undefined>;
+  deletePageResults(jobId: string): Promise<void>;
+  cleanup(olderThan: Date): Promise<void>;
 }
 
-export const db = new OCRDatabase(); 
+// Abstract base class for database implementations
+export abstract class BaseDatabase implements DatabaseOperations {
+  protected isInitialized = false;
+
+  protected ensureInitialized(): void {
+    if (!this.isInitialized) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+  }
+
+  abstract initialize(): Promise<void>;
+  abstract saveJob(job: ProcessingJob): Promise<string>;
+  abstract updateJob(id: string, updates: Partial<ProcessingJob>): Promise<void>;
+  abstract getJobs(): Promise<ProcessingJob[]>;
+  abstract getJob(id: string): Promise<ProcessingJob | undefined>;
+  abstract deleteJob(id: string): Promise<void>;
+  abstract saveSettings(settings: AppSettings): Promise<void>;
+  abstract getSettings(): Promise<AppSettings | undefined>;
+  abstract cacheModel(model: CachedModel): Promise<void>;
+  abstract getCachedModels(provider: OCRProvider): Promise<CachedModel[]>;
+  abstract saveFile(file: CachedFile): Promise<void>;
+  abstract getFile(id: string): Promise<CachedFile | undefined>;
+  abstract deleteFile(id: string): Promise<void>;
+  abstract savePageResult(pageResult: PageResult): Promise<void>;
+  abstract getPageResults(jobId: string): Promise<PageResult[]>;
+  abstract getPageResult(jobId: string, pageNumber: number): Promise<PageResult | undefined>;
+  abstract deletePageResults(jobId: string): Promise<void>;
+  abstract cleanup(olderThan: Date): Promise<void>;
+}
+
+// Create and export a single database instance
+export const db = new SQLiteDatabase();
+
+// Initialize the database
+db.initialize().catch(console.error);
+
+// Export the database instance as default
+export default db; 
