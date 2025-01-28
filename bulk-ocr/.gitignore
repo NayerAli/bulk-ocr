@@ -3,6 +3,13 @@
 # dependencies
 /node_modules
 
+# local files
+.DS_Store
+
+# Database
+.sqlite
+.db*
+
 # next.js
 /.next/
 /out/
